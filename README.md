@@ -11,7 +11,7 @@ license: mit
 
 # KitchenFlow-v2 — Ghost Kitchen Dispatcher
 
-🚀 **Training Notebook (Colab):** https://colab.research.google.com/drive/1K5dbjojC5ZtTw-PzGf6wJbPIyUcAE2p4  
+🚀 **Training Notebook (Colab):** https://colab.research.google.com/drive/1Sfvju98sWX4HEDqJczHpGSiK1wSux2LW?usp=sharing
 🔗 **Live Demo:** https://huggingface.co/spaces/manzz05/kitchenflow-v2  
 📝 **Blog Post:** https://huggingface.co/spaces/manzz05/kitchenflow-v2/blob/main/blog.md
 
