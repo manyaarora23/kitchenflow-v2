@@ -1,0 +1,168 @@
+name: KitchenFlow-v2
+version: "2.0.0"
+description: >
+  Ghost kitchen dispatcher RL environment. An LLM agent manages simultaneous
+  food delivery orders, timing driver dispatch against kitchen prep progress,
+  real-time traffic, food temperature decay, and mid-episode chaos events
+  (driver cancellations, GPS schema drift, traffic surges). Features a
+  Kitchen Coordinator sub-agent for multi-agent negotiation.
+
+themes:
+  primary: "World Modeling — Professional Tasks (Theme 3.1)"
+  secondary:
+    - "Long-Horizon Planning & Instruction Following (Theme 2)"
+    - "Multi-Agent Interactions (Theme 1)"
+  bonus:
+    - "Patronus AI: stale_data chaos events as schema drift analog"
+    - "Scaler AI Labs: multi-restaurant enterprise mode at difficulty 4"
+
+base_class: openenv.Environment
+
+action_space:
+  type: discrete_per_order
+  actions:
+    0: wait
+    1: summon_driver
+    2: request_coordinator_priority
+    3: requery_gps
+
+observation_space:
+  per_order:
+    - name: food_prep_progress
+      type: float
+      range: [0.0, 1.0]
+    - name: driver_dist_km
+      type: float
+      range: [0.0, 10.0]
+      note: "corrupted when data_is_stale (schema drift)"
+    - name: traffic_index
+      type: float
+      range: [1.0, 2.5]
+    - name: food_temp_c
+      type: float
+      range: [40.0, 72.0]
+    - name: coordinator_signal
+      type: categorical
+      values: [idle, on_track, delayed, almost_ready, ready]
+    - name: coordinator_signal_encoded
+      type: int
+      range: [0, 4]
+    - name: data_is_stale
+      type: bool
+    - name: driver_summoned
+      type: bool
+    - name: driver_arrived
+      type: bool
+    - name: driver_wait_minutes
+      type: int
+
+reward_components:
+  - name: sync_bonus
+    value: +10
+    trigger: "Driver arrives within 2 minutes of food ready"
+    location: env.step()
+  - name: delivery_base
+    value: +50
+    trigger: "Order successfully delivered"
+    location: env.step()
+  - name: temp_penalty
+    value: -1 per °C
+    trigger: "Each degree food is below 72°C at delivery"
+    location: env.step()
+  - name: waste_penalty
+    value: -20
+    trigger: "Driver waits more than 15 minutes (cancel risk)"
+    location: env.step()
+  - name: rush_bonus
+    value: +15
+    trigger: "All orders completed within 75% of max episode steps"
+    location: env.step()
+  - name: chaos_recovery_bonus
+    value: +5
+    trigger: "Agent uses requery_gps action after stale_data chaos event"
+    location: env.step()
+  - name: format_reward
+    value: +1 / -1
+    trigger: "Clean valid JSON output / malformed response"
+    location: train.py verifier
+
+anti_reward_hacking:
+  - "Multiple independent reward signals (6 components)"
+  - "Chaos recovery requires correct action — cannot be coincidental"
+  - "GPS data stale flag expires after N steps regardless of agent action"
+  - "Driver wait penalty accumulates each step — cannot be gamed by timing"
+  - "Temperature penalty is continuous — no cliff to exploit"
+
+curriculum:
+  levels:
+    1:
+      description: "Single order, no chaos, clear traffic"
+      num_orders: 1
+      chaos_level: 0
+      gate: "avg_reward >= 40 over 10 consecutive episodes"
+    2:
+      description: "Single order + 1 chaos event"
+      num_orders: 1
+      chaos_level: 1
+      gate: "avg_reward >= 35 over 10 consecutive episodes"
+    3:
+      description: "Lunch rush — 3 orders, chaos events"
+      num_orders: 3
+      chaos_level: 1
+      gate: "avg_reward >= 25 over 10 consecutive episodes"
+    4:
+      description: "Enterprise — 5 orders, 2 chaos events, multi-restaurant"
+      num_orders: 5
+      chaos_level: 2
+
+chaos_events:
+  driver_cancel:
+    description: "Summoned driver disappears; agent must re-summon"
+    trigger: "prep 40-70%, driver not yet summoned"
+  traffic_surge:
+    description: "Traffic index spikes 0.5-1.0 mid-episode"
+    trigger: "prep 40-70%"
+  stale_data:
+    description: "GPS returns corrupted driver distance for 3 steps"
+    trigger: "prep 40-70%"
+    recovery_action: 3 (requery_gps)
+    recovery_reward: +5
+  item_stockout:
+    description: "Order cancelled mid-prep"
+    trigger: "any time"
+
+sub_agents:
+  - name: KitchenCoordinator
+    role: "Manages kitchen prep pacing; responds to dispatcher priority requests"
+    signals: [idle, on_track, delayed, almost_ready, ready]
+    actions_it_responds_to: [request_coordinator_priority]
+    negotiation: "Coordinator accepts priority if not currently busy (busy_until mechanic)"
+
+episode:
+  max_steps: 60
+  time_unit: "1 simulated minute per step"
+  termination:
+    - "All orders delivered or failed"
+    - "max_steps reached"
+
+deployment:
+  platform: HuggingFace Spaces
+  port: 7860
+  dockerfile: Dockerfile
+  api_endpoints:
+    - "POST /env/reset   — start a new episode"
+    - "POST /env/step    — take one action step"
+    - "GET  /env/state   — current state summary"
+    - "GET  /health      — liveness check"
+  note: "Endpoints prefixed /env/ to avoid reserved OpenEnv tool names (reset, step, state, close)"
+
+training:
+  framework: TRL (GRPOTrainer) + Unsloth
+  model_recommended: Qwen/Qwen2.5-7B-Instruct
+  model_colab: Qwen/Qwen2.5-1.5B-Instruct
+  script: train.py
+  notebook: KitchenFlow_v2_Training.ipynb
+  reward_funcs:
+    - "env reward (6 components, all via step() return value)"
+    - "format verifier (clean JSON output)"
+  save_method: "unsloth merged_16bit (avoids QLoRA upcast corruption)"
